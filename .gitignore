@@ -1,0 +1,12 @@
+*.xlsx
+*.csv
+*.json
+*.yaml
+*.yml
+*.jsonl
+*.jsonl.gz
+*.jsonl.bz2
+*.jsonl.xz
+*.jsonl.lzma
+*.jsonl.lz4
+*.jsonl.zstd
