@@ -227,69 +227,30 @@ def build_schedule(items: list[dict]):
         shift = it["shift"].strip() if it["shift"] else ""
         ruangan = it["ruangan"].strip() if it["ruangan"] else ""
 
-        # Jika hari, tanggal, shift sudah ada: hanya carikan ruangan jika kosong
+        # Jika hari, tanggal, shift sudah ada: JANGAN ubah waktu. Hanya carikan ruangan jika kosong.
         parsed = parse_existing_datetime(hari, tanggal, shift)
         if parsed is not None:
             start_dt, end_dt = parsed
-            if is_class_conflict(kelas, start_dt, end_dt):
-                # kelas bentrok, cari hari/shift lain dalam rentang diizinkan
-                assigned = False
-                for day_dt in iter_allowed_dates():
-                    for s_start, s_end in generate_daily_shifts(day_dt):
-                        if is_class_conflict(kelas, s_start, s_end):
-                            continue
-                        date_key = s_start.strftime("%Y-%m-%d")
-                        shift_key = format_time_range(s_start, s_end)
-                        room = pick_free_room(date_key, shift_key)
-                        if room:
-                            class_usage[kelas].append((s_start, s_end))
-                            room_usage[date_key][shift_key].add(room)
-                            generated_assignments.append({
-                                "HARI": weekday_name(s_start),
-                                "TANGGAL": s_start.strftime("%d-%b-%y"),
-                                "SHIFT": shift_key,
-                                "RUANGAN": room,
-                                "KODE MATA KULIAH": kode,
-                                "NAMA MATA KULIAH": nama,
-                                "NAMA DOSEN": it.get("nama_dosen", ""),
-                                "KELAS": kelas,
-                            })
-                            assigned = True
-                            break
-                    if assigned:
-                        break
-                if not assigned:
-                    generated_assignments.append({
-                        "HARI": weekday_name(start_dt),
-                        "TANGGAL": start_dt.strftime("%d-%b-%y"),
-                        "SHIFT": format_time_range(start_dt, end_dt),
-                        "RUANGAN": "",
-                        "KODE MATA KULIAH": kode,
-                        "NAMA MATA KULIAH": nama,
-                        "NAMA DOSEN": it.get("nama_dosen", ""),
-                        "KELAS": kelas,
-                    })
-            else:
-                date_key = start_dt.strftime("%Y-%m-%d")
-                shift_key = format_time_range(start_dt, end_dt)
-                # carikan ruangan jika kosong atau bentrok
-                room = ruangan if (ruangan and ruangan not in room_usage[date_key][shift_key] and is_room_allowed(ruangan)) else pick_free_room(date_key, shift_key)
-                if room is None:
-                    room = ""
-                if kelas:
-                    class_usage[kelas].append((start_dt, end_dt))
-                if room:
-                    room_usage[date_key][shift_key].add(room)
-                generated_assignments.append({
-                    "HARI": weekday_name(start_dt),
-                    "TANGGAL": start_dt.strftime("%d-%b-%y"),
-                    "SHIFT": shift_key,
-                    "RUANGAN": room,
-                    "KODE MATA KULIAH": kode,
-                    "NAMA MATA KULIAH": nama,
-                    "NAMA DOSEN": it.get("nama_dosen", ""),
-                    "KELAS": kelas,
-                })
+            date_key = start_dt.strftime("%Y-%m-%d")
+            shift_key = format_time_range(start_dt, end_dt)
+            # carikan ruangan jika kosong atau bentrok; JANGAN ubah waktu
+            room = ruangan if (ruangan and ruangan not in room_usage[date_key][shift_key] and is_room_allowed(ruangan)) else pick_free_room(date_key, shift_key)
+            if room is None:
+                room = ""
+            if kelas:
+                class_usage[kelas].append((start_dt, end_dt))
+            if room:
+                room_usage[date_key][shift_key].add(room)
+            generated_assignments.append({
+                "HARI": weekday_name(start_dt),
+                "TANGGAL": start_dt.strftime("%d-%b-%y"),
+                "SHIFT": shift_key,
+                "RUANGAN": room,
+                "KODE MATA KULIAH": kode,
+                "NAMA MATA KULIAH": nama,
+                "NAMA DOSEN": it.get("nama_dosen", ""),
+                "KELAS": kelas,
+            })
             continue
 
         # Jika belum ada hari/tanggal/shift, generate baru
