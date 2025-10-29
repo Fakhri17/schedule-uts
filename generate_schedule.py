@@ -38,8 +38,8 @@ def parse_csv(path: Path):
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f, delimiter=";")
         rows = list(reader)
-    # Header pada file ini bukan standar, gunakan indeks kolom berdasarkan baris 2
-    header = rows[1]
+    # Header ada pada baris pertama file
+    header = rows[0]
     # Buat mapping kolom ke index
     col_idx = {name.strip().upper(): i for i, name in enumerate(header)}
 
@@ -50,7 +50,7 @@ def parse_csv(path: Path):
         return row[i].strip()
 
     items = []
-    for r in rows[2:]:
+    for r in rows[1:]:
         if not any(r):
             continue
         kode_mk = get(r, "KODE MATA KULIAH")
@@ -252,14 +252,30 @@ def build_schedule(items: list[dict]):
         shift = it["shift"].strip() if it["shift"] else ""
         ruangan = it["ruangan"].strip() if it["ruangan"] else ""
 
+        # Jika semua field (hari, tanggal, shift, ruangan) sudah terisi di CSV,
+        # gunakan persis apa adanya tanpa randomisasi apapun.
+        if hari and tanggal and shift and ruangan:
+            generated_assignments.append({
+                "HARI": it["hari"],             # pakai persis dari CSV
+                "TANGGAL": it["tanggal"],       # pakai persis dari CSV (format bisa bervariasi)
+                "SHIFT": it["shift"],           # pakai persis dari CSV
+                "RUANGAN": it["ruangan"],       # pakai persis dari CSV
+                "KODE MATA KULIAH": kode,
+                "NAMA MATA KULIAH": nama,
+                "NAMA DOSEN": it.get("nama_dosen", ""),
+                "KELAS": kelas,
+            })
+            continue
+
         # Jika hari, tanggal, shift sudah ada: JANGAN ubah waktu. Hanya carikan ruangan jika kosong.
         parsed = parse_existing_datetime(hari, tanggal, shift)
         if parsed is not None:
             start_dt, end_dt = parsed
             date_key = start_dt.strftime("%Y-%m-%d")
             shift_key = format_time_range(start_dt, end_dt)
-            # carikan ruangan jika kosong atau bentrok; JANGAN ubah waktu
-            room = ruangan if (ruangan and ruangan not in room_usage[date_key][shift_key] and is_room_allowed(ruangan)) else pick_free_room(date_key, shift_key)
+            # Jika ruangan sudah ada di CSV, pakai apa adanya (tidak dirandom)
+            # Jika kosong, baru cari ruangan kosong secara acak
+            room = ruangan if ruangan else pick_free_room(date_key, shift_key)
             if room is None:
                 room = ""
             if kelas:
@@ -287,7 +303,16 @@ def build_schedule(items: list[dict]):
                     continue
                 date_key = s_start.strftime("%Y-%m-%d")
                 shift_key = format_time_range(s_start, s_end)
-                room = pick_free_room(date_key, shift_key)
+                # Jika CSV sudah menspesifikkan ruangan, coba pakai ruangan itu saja
+                if ruangan:
+                    # Hanya assign jika ruangan tersebut belum dipakai pada slot ini
+                    if ruangan not in room_usage[date_key][shift_key]:
+                        room = ruangan
+                    else:
+                        # Slot ini tidak tersedia untuk ruangan yang diminta, coba slot berikutnya
+                        continue
+                else:
+                    room = pick_free_room(date_key, shift_key)
                 if room:
                     class_usage[kelas].append((s_start, s_end))
                     class_daily_count[kelas][date_key] += 1
