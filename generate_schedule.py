@@ -77,6 +77,12 @@ def parse_csv(path: Path):
         tanggal = get(r, "TANGGAL")
         shift = get(r, "SHIFT")  # contoh: "07.30 - 09.30"
         ruangan = get(r, "RUANGAN")
+        bentuk_ujian = get(r, "BENTUK UJIAN")
+        butuh_gandakan = get(r, "BUTUH MENGGANDAKAN SOAL")
+        butuh_lembar = get(r, "BUTUH LEMBAR JAWABAN KERJA")
+        butuh_pengawas = get(r, "BUTUH PENGAWAS UJIAN")
+        butuh_ruang = get(r, "BUTUH RUANG KELAS")
+        jumlah_mhs = get(r, "JUMLAH MAHASISWA")
 
         items.append({
             "kode_mk": kode_mk,
@@ -87,6 +93,12 @@ def parse_csv(path: Path):
             "tanggal": tanggal,
             "shift": shift,
             "ruangan": ruangan,
+            "bentuk_ujian": bentuk_ujian,
+            "butuh_gandakan": butuh_gandakan.upper() if butuh_gandakan else "",
+            "butuh_lembar": butuh_lembar.upper() if butuh_lembar else "",
+            "butuh_pengawas": butuh_pengawas.upper() if butuh_pengawas else "",
+            "butuh_ruang": butuh_ruang.upper() if butuh_ruang else "",
+            "jumlah_mhs": jumlah_mhs,
         })
     return items
 
@@ -275,6 +287,12 @@ def build_schedule(items: list[dict]):
                 "NAMA MATA KULIAH": nama,
                 "NAMA DOSEN": it.get("nama_dosen", ""),
                 "KELAS": kelas,
+                "BENTUK UJIAN": it.get("bentuk_ujian", ""),
+                "BUTUH MENGGANDAKAN SOAL": it.get("butuh_gandakan", ""),
+                "BUTUH LEMBAR JAWABAN KERJA": it.get("butuh_lembar", ""),
+                "BUTUH PENGAWAS UJIAN": it.get("butuh_pengawas", ""),
+                "BUTUH RUANG KELAS": it.get("butuh_ruang", ""),
+                "JUMLAH MAHASISWA": it.get("jumlah_mhs", ""),
             })
             continue
 
@@ -303,6 +321,12 @@ def build_schedule(items: list[dict]):
                 "NAMA MATA KULIAH": nama,
                 "NAMA DOSEN": it.get("nama_dosen", ""),
                 "KELAS": kelas,
+                "BENTUK UJIAN": it.get("bentuk_ujian", ""),
+                "BUTUH MENGGANDAKAN SOAL": it.get("butuh_gandakan", ""),
+                "BUTUH LEMBAR JAWABAN KERJA": it.get("butuh_lembar", ""),
+                "BUTUH PENGAWAS UJIAN": it.get("butuh_pengawas", ""),
+                "BUTUH RUANG KELAS": it.get("butuh_ruang", ""),
+                "JUMLAH MAHASISWA": it.get("jumlah_mhs", ""),
             })
             continue
 
@@ -337,6 +361,12 @@ def build_schedule(items: list[dict]):
                         "NAMA MATA KULIAH": nama,
                         "NAMA DOSEN": it.get("nama_dosen", ""),
                         "KELAS": kelas,
+                        "BENTUK UJIAN": it.get("bentuk_ujian", ""),
+                        "BUTUH MENGGANDAKAN SOAL": it.get("butuh_gandakan", ""),
+                        "BUTUH LEMBAR JAWABAN KERJA": it.get("butuh_lembar", ""),
+                        "BUTUH PENGAWAS UJIAN": it.get("butuh_pengawas", ""),
+                        "BUTUH RUANG KELAS": it.get("butuh_ruang", ""),
+                        "JUMLAH MAHASISWA": it.get("jumlah_mhs", ""),
                     })
                     assigned = True
                     break
@@ -353,6 +383,12 @@ def build_schedule(items: list[dict]):
                 "NAMA MATA KULIAH": nama,
                 "NAMA DOSEN": it.get("nama_dosen", ""),
                 "KELAS": kelas,
+                "BENTUK UJIAN": it.get("bentuk_ujian", ""),
+                "BUTUH MENGGANDAKAN SOAL": it.get("butuh_gandakan", ""),
+                "BUTUH LEMBAR JAWABAN KERJA": it.get("butuh_lembar", ""),
+                "BUTUH PENGAWAS UJIAN": it.get("butuh_pengawas", ""),
+                "BUTUH RUANG KELAS": it.get("butuh_ruang", ""),
+                "JUMLAH MAHASISWA": it.get("jumlah_mhs", ""),
             })
 
     return generated_assignments
@@ -369,6 +405,12 @@ def write_outputs(assignments, out_csv: Path, out_xlsx: Path | None):
         "NAMA MATA KULIAH",
         "NAMA DOSEN",
         "KELAS",
+        "BENTUK UJIAN",
+        "BUTUH MENGGANDAKAN SOAL",
+        "BUTUH LEMBAR JAWABAN KERJA",
+        "BUTUH PENGAWAS UJIAN",
+        "BUTUH RUANG KELAS",
+        "JUMLAH MAHASISWA",
     ]
     with out_csv.open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
@@ -396,7 +438,6 @@ def write_outputs(assignments, out_csv: Path, out_xlsx: Path | None):
                         for idx, col_name in enumerate(df.columns, start=1):
                             series = df[col_name].astype(str)
                             max_len = max([len(col_name)] + [len(x) for x in series.tolist()])
-                            # Faktor lebar ~1 char = 1 unit, tambahkan margin
                             width = max(10, min(60, max_len + 2))
                             ws.column_dimensions[get_column_letter(idx)].width = width
                     except Exception:
@@ -421,6 +462,28 @@ def write_outputs(assignments, out_csv: Path, out_xlsx: Path | None):
                             max_len = max([len(col_name)] + [len(x) for x in series.tolist()])
                             width = max(10, min(60, max_len + 2))
                             worksheet.set_column(c, c, width)
+
+                        # Tambahkan checkbox untuk kolom boolean tertentu
+                        checkbox_cols = [
+                            "BUTUH MENGGANDAKAN SOAL",
+                            "BUTUH LEMBAR JAWABAN KERJA",
+                            "BUTUH PENGAWAS UJIAN",
+                            "BUTUH RUANG KELAS",
+                        ]
+                        header_to_col = {name: idx for idx, name in enumerate(df.columns)}
+                        for col_name in checkbox_cols:
+                            if col_name not in header_to_col:
+                                continue
+                            cidx = header_to_col[col_name]
+                            for r in range(last_row):
+                                val = str(df.iloc[r, cidx]).strip().upper()
+                                checked = (val == "TRUE")
+                                # Insert checkbox anchored to the cell (row+1 data row due to header)
+                                try:
+                                    worksheet.insert_checkbox(r + 1, cidx, {"checked": checked, "text": ""})
+                                except Exception:
+                                    # If insert_checkbox not available or fails, skip silently
+                                    pass
                 except Exception:
                     # Jika kedua engine tidak tersedia, tulis tanpa fitur tambahan
                     df.to_excel(out_xlsx, index=False)
