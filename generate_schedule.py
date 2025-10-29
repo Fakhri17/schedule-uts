@@ -23,15 +23,29 @@ LUNCH_BREAK_END = time(13, 0)
 # Daftar ruangan yang tersedia - akan dimuat dari ruangan-kampus.csv
 ALL_ROOMS = []
 
-# Blacklist ruangan (mudah diedit)
-BLACKLIST_SUFFIXES = {"KELAS 2.09", "KELAS 2.08", "KELAS 2.07", "KELAS 2.06", "KELAS 2.05", "KELAS 2.04"}
+# Blacklist ruangan berdasarkan hari (khusus minggu UTS 3-7 Nov 2025)
+BLACKLIST_MON_WED_SUFFIXES = {"KELAS 2.08", "KELAS 2.07", "KELAS 2.06", "KELAS 2.05", "KELAS 2.04"}
+BLACKLIST_MON_FRI_SUFFIXES = {"KELAS 2.09"}
 
 
-def is_room_allowed(room: str) -> bool:
-    for suf in BLACKLIST_SUFFIXES:
-        if room.endswith(suf):
-            return False
-    return True
+def is_within_uts_week(date_dt: datetime) -> bool:
+    return START_DATE.date() <= date_dt.date() <= END_DATE.date()
+
+
+def is_room_blacklisted_on_date(room: str, date_dt: datetime) -> bool:
+    """Return True jika ruangan diblacklist pada tanggal tersebut."""
+    if not is_within_uts_week(date_dt):
+        return False
+    weekday = date_dt.weekday()  # 0=Mon ... 4=Fri
+    # KELAS 2.09 diblacklist Senin-Jumat
+    for suf in BLACKLIST_MON_FRI_SUFFIXES:
+        if room.endswith(suf) and weekday <= 4:
+            return True
+    # Lainnya diblacklist Senin-Rabu
+    for suf in BLACKLIST_MON_WED_SUFFIXES:
+        if room.endswith(suf) and weekday <= 2:
+            return True
+    return False
 
 
 def parse_csv(path: Path):
@@ -230,13 +244,10 @@ def build_schedule(items: list[dict]):
             
         return False
 
-    # Filter rooms allowed
-    allowed_rooms = [r for r in ALL_ROOMS if is_room_allowed(r)]
-
-    # Fungsi memilih ruangan kosong pada tanggal+shift tertentu
-    def pick_free_room(date_key: str, shift_key: str) -> str | None:
+    # Fungsi memilih ruangan kosong pada tanggal+shift tertentu (memperhatikan blacklist per tanggal)
+    def pick_free_room(date_dt: datetime, date_key: str, shift_key: str) -> str | None:
         used = room_usage[date_key][shift_key]
-        free = [r for r in allowed_rooms if r not in used]
+        free = [r for r in ALL_ROOMS if r not in used and not is_room_blacklisted_on_date(r, date_dt)]
         if not free:
             return None
         return random.choice(free)
@@ -275,7 +286,7 @@ def build_schedule(items: list[dict]):
             shift_key = format_time_range(start_dt, end_dt)
             # Jika ruangan sudah ada di CSV, pakai apa adanya (tidak dirandom)
             # Jika kosong, baru cari ruangan kosong secara acak
-            room = ruangan if ruangan else pick_free_room(date_key, shift_key)
+            room = ruangan if ruangan else pick_free_room(start_dt, date_key, shift_key)
             if room is None:
                 room = ""
             if kelas:
@@ -306,13 +317,13 @@ def build_schedule(items: list[dict]):
                 # Jika CSV sudah menspesifikkan ruangan, coba pakai ruangan itu saja
                 if ruangan:
                     # Hanya assign jika ruangan tersebut belum dipakai pada slot ini
-                    if ruangan not in room_usage[date_key][shift_key]:
+                    if ruangan not in room_usage[date_key][shift_key] and not is_room_blacklisted_on_date(ruangan, s_start):
                         room = ruangan
                     else:
                         # Slot ini tidak tersedia untuk ruangan yang diminta, coba slot berikutnya
                         continue
                 else:
-                    room = pick_free_room(date_key, shift_key)
+                    room = pick_free_room(s_start, date_key, shift_key)
                 if room:
                     class_usage[kelas].append((s_start, s_end))
                     class_daily_count[kelas][date_key] += 1
