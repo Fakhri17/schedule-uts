@@ -20,17 +20,11 @@ GAP_BETWEEN_SHIFTS_MIN = 30  # jeda antar shift
 LUNCH_BREAK_START = time(12, 0)
 LUNCH_BREAK_END = time(13, 0)
 
-# Daftar ruangan yang tersedia
-ALL_ROOMS = [
-    "KTT1.02","KTT1.08","KTT1.09","KTT1.16","KTT1.17","KTT1.18","KTT1.19",
-    "KTT1.20","KTT1.21","KTT1.03","KTT1.04","KTT1.05","KTT1.06","KTT1.07",
-    "KTT1.22","KTT2.07","KTT2.08","KTT2.09","KTT2.15","KTT2.16","KTT2.17",
-    "KTT2.18","KTT2.19","KTT2.04","KTT2.05","KTT2.03","KTT2.06","KTT2.02",
-    "KTT2.23","KTT2.25","KTT2.26","KTT2.27","KTT2.28","KTT2.35","KTT2.36","KTT2.20",
-]
+# Daftar ruangan yang tersedia - akan dimuat dari ruangan-kampus.csv
+ALL_ROOMS = []
 
 # Blacklist ruangan (mudah diedit)
-BLACKLIST_SUFFIXES = {"KTT2.09", "KTT2.08", "KTT2.07", "KTT2.06", "KTT2.05", "KTT2.04"}
+BLACKLIST_SUFFIXES = {"KELAS 2.09", "KELAS 2.08", "KELAS 2.07", "KELAS 2.06", "KELAS 2.05", "KELAS 2.04"}
 
 
 def is_room_allowed(room: str) -> bool:
@@ -81,6 +75,27 @@ def parse_csv(path: Path):
             "ruangan": ruangan,
         })
     return items
+
+
+def load_rooms_from_csv(rooms_csv_path: Path) -> list[str]:
+    """Load room names from ruangan-kampus.csv file."""
+    rooms = []
+    try:
+        with rooms_csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            rows = list(reader)
+        
+        # Skip header row (first row)
+        for row in rows[1:]:
+            if len(row) > 0 and row[0].strip():  # Check if RUANGAN column has data
+                room_name = row[0].strip()
+                if room_name:  # Only add non-empty room names
+                    rooms.append(room_name)
+    except Exception as e:
+        print(f"Error loading rooms from {rooms_csv_path}: {e}")
+        print("Using empty room list as fallback")
+    
+    return rooms
 
 
 def format_time_range(start_dt: datetime, end_dt: datetime) -> str:
@@ -371,6 +386,13 @@ def write_outputs(assignments, out_csv: Path, out_xlsx: Path | None):
 def main():
     base = Path(__file__).parent
     input_csv = base / "jadwal-uts.csv"
+    rooms_csv = base / "ruangan-kampus.csv"
+    
+    # Load rooms from CSV file
+    global ALL_ROOMS
+    ALL_ROOMS = load_rooms_from_csv(rooms_csv)
+    print(f"Loaded {len(ALL_ROOMS)} rooms from {rooms_csv.name}")
+    
     items = parse_csv(input_csv)
     assignments = build_schedule(items)
     out_csv = base / "jadwal-uts-output.csv"
