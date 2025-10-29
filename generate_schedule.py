@@ -406,10 +406,6 @@ def write_outputs(assignments, out_csv: Path, out_xlsx: Path | None):
         "NAMA DOSEN",
         "KELAS",
         "BENTUK UJIAN",
-        "BUTUH MENGGANDAKAN SOAL",
-        "BUTUH LEMBAR JAWABAN KERJA",
-        "BUTUH PENGAWAS UJIAN",
-        "BUTUH RUANG KELAS",
         "JUMLAH MAHASISWA",
     ]
     with out_csv.open("w", encoding="utf-8", newline="") as f:
@@ -422,68 +418,46 @@ def write_outputs(assignments, out_csv: Path, out_xlsx: Path | None):
         try:
             # Tuliskan menggunakan pandas
             df = pd.DataFrame(assignments, columns=cols)
-            # Coba gunakan openpyxl lebih dulu agar bisa set auto filter
+            # Prioritaskan xlsxwriter agar bisa insert checkbox
             try:
-                from openpyxl import load_workbook  # type: ignore
-                with pd.ExcelWriter(out_xlsx, engine="openpyxl") as writer:  # type: ignore
+                with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as writer:  # type: ignore
                     df.to_excel(writer, index=False, sheet_name="Sheet1")
-                    ws = writer.book["Sheet1"]
-                    # Set auto filter untuk seluruh area data
-                    ws.auto_filter.ref = ws.dimensions
-                    # Freeze header baris pertama
-                    ws.freeze_panes = "A2"
-                    # Auto-resize kolom berdasarkan panjang data
-                    try:
-                        from openpyxl.utils import get_column_letter  # type: ignore
-                        for idx, col_name in enumerate(df.columns, start=1):
-                            series = df[col_name].astype(str)
-                            max_len = max([len(col_name)] + [len(x) for x in series.tolist()])
-                            width = max(10, min(60, max_len + 2))
-                            ws.column_dimensions[get_column_letter(idx)].width = width
-                    except Exception:
-                        pass
+                    workbook  = writer.book
+                    worksheet = writer.sheets["Sheet1"]
+                    # Hitung dimensi data
+                    last_row = len(df)
+                    last_col = len(df.columns) - 1
+                    # Terapkan autofilter (baris 0 adalah header)
+                    worksheet.autofilter(0, 0, last_row, last_col)
+                    # Freeze header
+                    worksheet.freeze_panes(1, 0)
+                    # Auto-resize kolom
+                    for c, col_name in enumerate(df.columns):
+                        series = df[col_name].astype(str)
+                        max_len = max([len(col_name)] + [len(x) for x in series.tolist()])
+                        width = max(10, min(60, max_len + 2))
+                        worksheet.set_column(c, c, width)
             except Exception:
-                # Fallback ke xlsxwriter jika openpyxl tidak ada
+                # Fallback ke openpyxl jika xlsxwriter tidak ada
                 try:
-                    with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as writer:  # type: ignore
+                    from openpyxl import load_workbook  # type: ignore
+                    with pd.ExcelWriter(out_xlsx, engine="openpyxl") as writer:  # type: ignore
                         df.to_excel(writer, index=False, sheet_name="Sheet1")
-                        workbook  = writer.book
-                        worksheet = writer.sheets["Sheet1"]
-                        # Hitung dimensi data
-                        last_row = len(df)
-                        last_col = len(df.columns) - 1
-                        # Terapkan autofilter (baris 0 adalah header)
-                        worksheet.autofilter(0, 0, last_row, last_col)
-                        # Freeze header
-                        worksheet.freeze_panes(1, 0)
-                        # Auto-resize kolom
-                        for c, col_name in enumerate(df.columns):
-                            series = df[col_name].astype(str)
-                            max_len = max([len(col_name)] + [len(x) for x in series.tolist()])
-                            width = max(10, min(60, max_len + 2))
-                            worksheet.set_column(c, c, width)
-
-                        # Tambahkan checkbox untuk kolom boolean tertentu
-                        checkbox_cols = [
-                            "BUTUH MENGGANDAKAN SOAL",
-                            "BUTUH LEMBAR JAWABAN KERJA",
-                            "BUTUH PENGAWAS UJIAN",
-                            "BUTUH RUANG KELAS",
-                        ]
-                        header_to_col = {name: idx for idx, name in enumerate(df.columns)}
-                        for col_name in checkbox_cols:
-                            if col_name not in header_to_col:
-                                continue
-                            cidx = header_to_col[col_name]
-                            for r in range(last_row):
-                                val = str(df.iloc[r, cidx]).strip().upper()
-                                checked = (val == "TRUE")
-                                # Insert checkbox anchored to the cell (row+1 data row due to header)
-                                try:
-                                    worksheet.insert_checkbox(r + 1, cidx, {"checked": checked, "text": ""})
-                                except Exception:
-                                    # If insert_checkbox not available or fails, skip silently
-                                    pass
+                        ws = writer.book["Sheet1"]
+                        # Set auto filter untuk seluruh area data
+                        ws.auto_filter.ref = ws.dimensions
+                        # Freeze header baris pertama
+                        ws.freeze_panes = "A2"
+                        # Auto-resize kolom berdasarkan panjang data
+                        try:
+                            from openpyxl.utils import get_column_letter  # type: ignore
+                            for idx, col_name in enumerate(df.columns, start=1):
+                                series = df[col_name].astype(str)
+                                max_len = max([len(col_name)] + [len(x) for x in series.tolist()])
+                                width = max(10, min(60, max_len + 2))
+                                ws.column_dimensions[get_column_letter(idx)].width = width
+                        except Exception:
+                            pass
                 except Exception:
                     # Jika kedua engine tidak tersedia, tulis tanpa fitur tambahan
                     df.to_excel(out_xlsx, index=False)
@@ -491,7 +465,7 @@ def write_outputs(assignments, out_csv: Path, out_xlsx: Path | None):
             # Jika engine Excel (mis. openpyxl/xlsxwriter) belum terpasang, lanjutkan tanpa XLSX
             print(
                 "Gagal menulis Excel (", e, ") -> Melewatkan XLSX. "
-                "Install salah satu: 'pip install openpyxl' atau 'pip install xlsxwriter' untuk mengaktifkan ekspor Excel.")
+                "Install salah satu: 'pip install xlsxwriter' atau 'pip install openpyxl' untuk mengaktifkan ekspor Excel.")
 
 
 def main():
