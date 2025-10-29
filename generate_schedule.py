@@ -191,6 +191,7 @@ def build_schedule(items: list[dict]):
     # State pemakaian: per (tanggal, shift_str) -> set(room), dan kelas-> list times
     room_usage = defaultdict(lambda: defaultdict(set))  # date_str -> shift_str -> set(rooms)
     class_usage = defaultdict(list)  # kelas -> list[(start_dt,end_dt)]
+    class_daily_count = defaultdict(lambda: defaultdict(int))  # kelas -> date_str -> count
 
     # Kumpulkan existing jadwal bila ada
     for it in items:
@@ -204,6 +205,7 @@ def build_schedule(items: list[dict]):
             cls = it["kelas"]
             if cls:
                 class_usage[cls].append((start_dt, end_dt))
+                class_daily_count[cls][date_key] += 1
             room = it["ruangan"].strip() if it["ruangan"] else ""
             if room:
                 room_usage[date_key][shift_key].add(room)
@@ -215,9 +217,17 @@ def build_schedule(items: list[dict]):
     def is_class_conflict(kelas: str, start_dt: datetime, end_dt: datetime) -> bool:
         if not kelas:
             return False
+        
+        # Check for time overlap conflicts
         for s, e in class_usage.get(kelas, []):
             if not (end_dt <= s or start_dt >= e):
                 return True
+        
+        # Check for daily limit (max 2 exams per day)
+        date_key = start_dt.strftime("%Y-%m-%d")
+        if class_daily_count[kelas][date_key] >= 2:
+            return True
+            
         return False
 
     # Filter rooms allowed
@@ -254,6 +264,7 @@ def build_schedule(items: list[dict]):
                 room = ""
             if kelas:
                 class_usage[kelas].append((start_dt, end_dt))
+                class_daily_count[kelas][date_key] += 1
             if room:
                 room_usage[date_key][shift_key].add(room)
             generated_assignments.append({
@@ -279,6 +290,7 @@ def build_schedule(items: list[dict]):
                 room = pick_free_room(date_key, shift_key)
                 if room:
                     class_usage[kelas].append((s_start, s_end))
+                    class_daily_count[kelas][date_key] += 1
                     room_usage[date_key][shift_key].add(room)
                     generated_assignments.append({
                         "HARI": weekday_name(s_start),
