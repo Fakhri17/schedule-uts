@@ -20,6 +20,9 @@ GAP_BETWEEN_SHIFTS_MIN = 30  # jeda antar shift
 LUNCH_BREAK_START = time(12, 0)
 LUNCH_BREAK_END = time(13, 0)
 
+# Shifts resmi (tetap): 07.30-09.30, 10.00-12.00, 13.00-15.00, 15.30-17.30
+ALLOWED_SHIFT_STARTS = [time(7, 30), time(10, 0), time(13, 0), time(15, 30)]
+
 # Daftar ruangan yang tersedia - akan dimuat dari ruangan-kampus.csv
 ALL_ROOMS = []
 
@@ -46,6 +49,55 @@ def is_room_blacklisted_on_date(room: str, date_dt: datetime) -> bool:
         if room.endswith(suf) and weekday <= 2:
             return True
     return False
+
+
+# ============================ Aturan Khusus AULA ============================
+AULA_NAME = "AULA"
+
+def is_aula(room: str) -> bool:
+    return room.strip().upper() == AULA_NAME
+
+def is_aula_time_allowed(date_dt: datetime, start_dt: datetime, end_dt: datetime) -> bool:
+    """AULA rules:
+    - HANYA Senin dan Selasa di minggu UTS.
+      - Senin (2025-11-03): boleh full 07.30 - 17.30
+      - Selasa (2025-11-04): hanya boleh mulai dari 13.00 ke atas (start >= 13.00)
+    - Hari lain: TIDAK BOLEH dipakai
+    """
+    if not is_within_uts_week(date_dt):
+        return False
+    weekday = date_dt.weekday()  # 0=Mon, 1=Tue
+    if weekday == 0:  # Senin
+        return True
+    if weekday == 1:  # Selasa
+        allowed_start = datetime.combine(date_dt.date(), time(13, 0))
+        return start_dt >= allowed_start
+    # Rabu-Kamis-Jumat: tidak boleh
+    return False
+
+def aula_preferred_shifts(day_dt: datetime) -> list[tuple[datetime, datetime]]:
+    """Return shifts for a date reordered to prefer afternoon first for AULA.
+    For Tuesday: 13:00, 15:30, then 07:30, 10:00.
+    For Monday: 07:30, 10:00, then 13:00, 15:30.
+    """
+    slots = generate_daily_shifts(day_dt)
+    # map for easy lookup
+    if day_dt.weekday() == 0:  # Monday
+        order = [time(7, 30), time(10, 0), time(13, 0), time(15, 30)]
+    else:
+        # Tuesday and others
+        order = [time(13, 0), time(15, 30), time(7, 30), time(10, 0)]
+    by_start = {s[0].time(): s for s in slots}
+    return [by_start[t] for t in order if t in by_start]
+
+def aula_preferred_dates() -> list[datetime]:
+    """Prefer Tuesday first, then Monday within the UTS week."""
+    # Build list of allowed dates then reorder
+    dates = list(iter_allowed_dates())
+    mon = [d for d in dates if d.weekday() == 0]  # Monday
+    tue = [d for d in dates if d.weekday() == 1]  # Tuesday
+    others = [d for d in dates if d.weekday() not in (0, 1)]
+    return mon + tue + others
 
 
 def parse_csv(path: Path):
@@ -129,42 +181,25 @@ def format_time_range(start_dt: datetime, end_dt: datetime) -> str:
 
 
 def generate_daily_shifts(start_date: datetime) -> list[tuple[datetime, datetime]]:
-    """
-    Generate shift intervals for satu hari sesuai aturan:
-    - mulai 07.30 sampai 17.30
-    - durasi 2 jam per shift, jeda 30 menit
-    - istirahat 12.00 - 13.00 (lewati rentang ini)
-    """
-    day_start = datetime.combine(start_date.date(), DAY_START)
-    day_end = datetime.combine(start_date.date(), DAY_END)
-
+    """Kembalikan daftar shift tetap untuk tanggal tersebut."""
     shifts: list[tuple[datetime, datetime]] = []
-    t = day_start
-    while True:
-        end_t = t + timedelta(minutes=SHIFT_DURATION_MIN)
-        # Jika shift melampaui akhir hari, stop
-        if end_t > day_end:
-            break
-        # Skip jika overlap dengan jam istirahat
-        lunch_start_dt = datetime.combine(start_date.date(), LUNCH_BREAK_START)
-        lunch_end_dt = datetime.combine(start_date.date(), LUNCH_BREAK_END)
-        overlap_lunch = not (end_t <= lunch_start_dt or t >= lunch_end_dt)
-        if overlap_lunch:
-            # lompat ke setelah istirahat
-            t = lunch_end_dt
-            end_t = t + timedelta(minutes=SHIFT_DURATION_MIN)
-            if end_t > day_end:
-                break
-            shifts.append((t, end_t))
-            t = end_t + timedelta(minutes=GAP_BETWEEN_SHIFTS_MIN)
-            continue
-
-        shifts.append((t, end_t))
-        t = end_t + timedelta(minutes=GAP_BETWEEN_SHIFTS_MIN)
-        if t >= day_end:
-            break
-
+    for s in ALLOWED_SHIFT_STARTS:
+        start_dt = datetime.combine(start_date.date(), s)
+        end_dt = start_dt + timedelta(minutes=SHIFT_DURATION_MIN)
+        shifts.append((start_dt, end_dt))
     return shifts
+
+
+def normalize_to_allowed_shift(date_dt: datetime, start_dt: datetime) -> tuple[datetime, datetime]:
+    """Map arbitrary start time to the nearest allowed 2-hour shift on that date.
+    Allowed starts: 07:30, 10:00, 13:00, 15:30
+    """
+    allowed = [s for s in generate_daily_shifts(date_dt)]
+    if not allowed:
+        return start_dt, start_dt + timedelta(minutes=SHIFT_DURATION_MIN)
+    # Choose allowed slot with minimal absolute difference in start time
+    best = min(allowed, key=lambda se: abs((se[0] - start_dt).total_seconds()))
+    return best
 
 
 def weekday_name(dt: datetime) -> str:
@@ -192,17 +227,23 @@ def iter_allowed_dates():
 def parse_existing_datetime(hari: str, tanggal: str, shift: str) -> tuple[datetime, datetime] | None:
     if not tanggal or not shift:
         return None
-    # tanggal contoh: 05-Nov-25
-    try:
-        date_dt = datetime.strptime(tanggal, "%d-%b-%y")
-    except Exception:
+    # Coba beberapa format tanggal
+    date_formats = ["%d-%b-%y", "%d/%m/%Y", "%d-%m-%Y"]
+    date_dt = None
+    for fmt in date_formats:
+        try:
+            date_dt = datetime.strptime(tanggal.strip(), fmt)
+            break
+        except Exception:
+            continue
+    if date_dt is None:
         return None
-    # shift contoh: 07.30 - 09.30
+    # shift contoh: 07.30 - 09.30 (bisa ada tab/extra space)
     parts = shift.split("-")
     if len(parts) != 2:
         return None
-    start_s = parts[0].strip().replace(" ", "")
-    end_s = parts[1].strip()
+    start_s = parts[0].strip().replace(" ", "").replace("\t", "")
+    end_s = parts[1].strip().replace(" ", "").replace("\t", "")
     try:
         h1, m1 = map(int, start_s.split("."))
         h2, m2 = map(int, end_s.split("."))
@@ -214,8 +255,9 @@ def parse_existing_datetime(hari: str, tanggal: str, shift: str) -> tuple[dateti
 
 
 def build_schedule(items: list[dict]):
-    # State pemakaian: per (tanggal, shift_str) -> set(room), dan kelas-> list times
-    room_usage = defaultdict(lambda: defaultdict(set))  # date_str -> shift_str -> set(rooms)
+    # State pemakaian: per (tanggal, shift_str) -> room->count pemakaian, dan kelas-> list times
+    room_usage = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))  # date_str -> shift_str -> room -> count
+    room_occupants = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))  # date_str -> shift_str -> room -> list kelas
     class_usage = defaultdict(list)  # kelas -> list[(start_dt,end_dt)]
     class_daily_count = defaultdict(lambda: defaultdict(int))  # kelas -> date_str -> count
 
@@ -234,7 +276,10 @@ def build_schedule(items: list[dict]):
                 class_daily_count[cls][date_key] += 1
             room = it["ruangan"].strip() if it["ruangan"] else ""
             if room:
-                room_usage[date_key][shift_key].add(room)
+                room_usage[date_key][shift_key][room] += 1
+                cls_for_occ = it.get("kelas", "")
+                if cls_for_occ:
+                    room_occupants[date_key][shift_key][room].append(cls_for_occ)
 
     # Siapkan daftar shifts harian (dipakai untuk mengisi yang kosong)
     # Kita generate untuk beberapa hari ke depan (misal 14 hari) sampai kebutuhan terpenuhi
@@ -257,16 +302,76 @@ def build_schedule(items: list[dict]):
         return False
 
     # Fungsi memilih ruangan kosong pada tanggal+shift tertentu (memperhatikan blacklist per tanggal)
-    def pick_free_room(date_dt: datetime, date_key: str, shift_key: str) -> str | None:
-        used = room_usage[date_key][shift_key]
-        free = [r for r in ALL_ROOMS if r not in used and not is_room_blacklisted_on_date(r, date_dt)]
-        if not free:
+    def pick_free_room(date_dt: datetime, date_key: str, shift_key: str, start_dt: datetime, end_dt: datetime, bentuk_ujian: str, allow_aula: bool, jumlah_mhs: int = 0) -> str | None:
+        used_counts = room_usage[date_key][shift_key]
+        aula_candidates = []
+        normal_candidates = []
+        for r in ALL_ROOMS:
+            if is_room_blacklisted_on_date(r, date_dt):
+                continue
+            count = used_counts.get(r, 0)
+            if is_aula(r):
+                if not allow_aula:
+                    continue
+                # AULA hanya untuk ujian tulis dengan jumlah_mhs diketahui (>0)
+                bentuk = (bentuk_ujian or "").strip().lower()
+                if bentuk != "ujian tulis" or jumlah_mhs <= 0 or jumlah_mhs < 40:
+                    continue
+                # AULA boleh hingga 2 kelas per shift, dan patuhi aturan waktu khusus
+                if count < 2 and is_aula_time_allowed(date_dt, start_dt, end_dt):
+                    aula_candidates.append(r)
+            else:
+                if count == 0:
+                    normal_candidates.append(r)
+        if not aula_candidates and not normal_candidates:
             return None
-        return random.choice(free)
+        bentuk = (bentuk_ujian or "").strip().lower()
+        is_tulis = bentuk == "ujian tulis" and jumlah_mhs > 0 and jumlah_mhs >= 40
+        if is_tulis:
+            # Prioritaskan AULA dulu
+            if aula_candidates:
+                return AULA_NAME if AULA_NAME in aula_candidates else random.choice(aula_candidates)
+            if normal_candidates:
+                return random.choice(normal_candidates)
+        else:
+            # Non-"Ujian Tulis": gunakan ruangan biasa dulu, AULA sebagai fallback
+            if normal_candidates:
+                return random.choice(normal_candidates)
+            if aula_candidates:
+                return AULA_NAME if AULA_NAME in aula_candidates else random.choice(aula_candidates)
+        return None
 
     # Helper: iterate allowed dates and shifts until assignable
 
-    for it in items:
+    # Sort items by jumlah mahasiswa desc to prioritize bigger classes for AULA
+    def parse_int_safe(v: str) -> int:
+        try:
+            return int(str(v).strip())
+        except Exception:
+            return 0
+
+    items_with_index = list(enumerate(items))
+
+    def sort_key(entry):
+        _, it0 = entry
+        bentuk0 = (it0.get("bentuk_ujian", "") or "").strip().lower()
+        is_tulis0 = bentuk0 == "ujian tulis"
+        has_shift0 = bool(
+            (it0.get("hari") or "").strip()
+            and (it0.get("tanggal") or "").strip()
+            and (it0.get("shift") or "").strip()
+        )
+        kelas0 = (it0.get("kelas", "") or "").strip()
+        prefix0 = kelas0[:2]
+        mhs0 = parse_int_safe(it0.get("jumlah_mhs", "0"))
+        # AULA candidate: Ujian Tulis and no pre-defined shift
+        aula_cand = (is_tulis0 and not has_shift0)
+        # Sort: AULA candidates first (1), then prefix, then jumlah desc
+        return (1 if aula_cand else 0, prefix0, -mhs0)
+
+    items_with_index.sort(key=sort_key, reverse=False)
+
+    for _, it in items_with_index:
         kode = it["kode_mk"]
         nama = it["nama_mk"]
         kelas = it["kelas"]
@@ -274,15 +379,31 @@ def build_schedule(items: list[dict]):
         tanggal = it["tanggal"].strip() if it["tanggal"] else ""
         shift = it["shift"].strip() if it["shift"] else ""
         ruangan = it["ruangan"].strip() if it["ruangan"] else ""
+        bentuk_ujian = (it.get("bentuk_ujian", "") or "").strip()
+        jumlah_mhs_val = parse_int_safe(it.get("jumlah_mhs", "0"))
 
         # Jika semua field (hari, tanggal, shift, ruangan) sudah terisi di CSV,
-        # gunakan persis apa adanya tanpa randomisasi apapun.
+        # gunakan persis apa adanya (TIDAK dinormalisasi), tapi tetap catat ke state bila bisa di-parse.
         if hari and tanggal and shift and ruangan:
+            parsed_full = parse_existing_datetime(hari, tanggal, shift)
+            if parsed_full is not None:
+                s_dt, e_dt = parsed_full
+                date_key = s_dt.strftime("%Y-%m-%d")
+                shift_key_state = format_time_range(s_dt, e_dt)
+                if kelas:
+                    class_usage[kelas].append((s_dt, e_dt))
+                    class_daily_count[kelas][date_key] += 1
+                room = ruangan.strip()
+                if room:
+                    room_usage[date_key][shift_key_state][room] += 1
+                    if kelas:
+                        room_occupants[date_key][shift_key_state][room].append(kelas)
+            # Tulis PERSIS seperti CSV
             generated_assignments.append({
-                "HARI": it["hari"],             # pakai persis dari CSV
-                "TANGGAL": it["tanggal"],       # pakai persis dari CSV (format bisa bervariasi)
-                "SHIFT": it["shift"],           # pakai persis dari CSV
-                "RUANGAN": it["ruangan"],       # pakai persis dari CSV
+                "HARI": it["hari"],
+                "TANGGAL": it["tanggal"],
+                "SHIFT": it["shift"],
+                "RUANGAN": it["ruangan"],
                 "KODE MATA KULIAH": kode,
                 "NAMA MATA KULIAH": nama,
                 "NAMA DOSEN": it.get("nama_dosen", ""),
@@ -304,14 +425,16 @@ def build_schedule(items: list[dict]):
             shift_key = format_time_range(start_dt, end_dt)
             # Jika ruangan sudah ada di CSV, pakai apa adanya (tidak dirandom)
             # Jika kosong, baru cari ruangan kosong secara acak
-            room = ruangan if ruangan else pick_free_room(start_dt, date_key, shift_key)
+            room = ruangan if ruangan else pick_free_room(start_dt, date_key, shift_key, start_dt, end_dt, bentuk_ujian, False, jumlah_mhs_val)
             if room is None:
                 room = ""
             if kelas:
                 class_usage[kelas].append((start_dt, end_dt))
                 class_daily_count[kelas][date_key] += 1
             if room:
-                room_usage[date_key][shift_key].add(room)
+                room_usage[date_key][shift_key][room] += 1
+                if kelas:
+                    room_occupants[date_key][shift_key][room].append(kelas)
             generated_assignments.append({
                 "HARI": weekday_name(start_dt),
                 "TANGGAL": start_dt.strftime("%d-%b-%y"),
@@ -332,8 +455,70 @@ def build_schedule(items: list[dict]):
 
         # Jika belum ada hari/tanggal/shift, generate baru
         assigned = False
-        for day_dt in iter_allowed_dates():
-            for s_start, s_end in generate_daily_shifts(day_dt):
+
+        # 1) Coba pairing ke AULA yang sudah punya 1 slot terisi terlebih dahulu (prefer prefix sama)
+        #    Hanya untuk BENTUK UJIAN = "Ujian Tulis"
+        #    Hanya untuk tanggal/shift yang kompatibel dengan kelas ini (tidak konflik) dan aturan AULA.
+        for day_dt in aula_preferred_dates():
+            for s_start, s_end in aula_preferred_shifts(day_dt):
+                if is_class_conflict(kelas, s_start, s_end):
+                    continue
+                date_key = s_start.strftime("%Y-%m-%d")
+                shift_key = format_time_range(s_start, s_end)
+                # Cari AULA yang masih count < 2 dan waktu diizinkan
+                counts = room_usage[date_key][shift_key]
+                aula_count = counts.get(AULA_NAME, 0)
+                if (bentuk_ujian.strip().lower() == "ujian tulis") and jumlah_mhs_val >= 40 and aula_count == 1 and is_aula_time_allowed(day_dt, s_start, s_end):
+                    # Prefer jika prefix kelas sama
+                    occupants = room_occupants[date_key][shift_key][AULA_NAME]
+                    prefer = False
+                    if occupants:
+                        try:
+                            pref_new = (kelas or "")[:2]
+                            pref_old = (occupants[0] or "")[:2]
+                            prefer = bool(pref_new) and bool(pref_old) and pref_new == pref_old
+                        except Exception:
+                            prefer = False
+                    # Wajib sama prefix untuk mengisi slot kedua AULA
+                    if not prefer:
+                        continue
+                    
+                    room = AULA_NAME
+                    class_usage[kelas].append((s_start, s_end))
+                    class_daily_count[kelas][date_key] += 1
+                    room_usage[date_key][shift_key][room] += 1
+                    if kelas:
+                        room_occupants[date_key][shift_key][room].append(kelas)
+                    generated_assignments.append({
+                        "HARI": weekday_name(s_start),
+                        "TANGGAL": s_start.strftime("%d-%b-%y"),
+                        "SHIFT": shift_key,
+                        "RUANGAN": room,
+                        "KODE MATA KULIAH": kode,
+                        "NAMA MATA KULIAH": nama,
+                        "NAMA DOSEN": it.get("nama_dosen", ""),
+                        "KELAS": kelas,
+                        "BENTUK UJIAN": it.get("bentuk_ujian", ""),
+                        "BUTUH MENGGANDAKAN SOAL": it.get("butuh_gandakan", ""),
+                        "BUTUH LEMBAR JAWABAN KERJA": it.get("butuh_lembar", ""),
+                        "BUTUH PENGAWAS UJIAN": it.get("butuh_pengawas", ""),
+                        "BUTUH RUANG KELAS": it.get("butuh_ruang", ""),
+                        "JUMLAH MAHASISWA": it.get("jumlah_mhs", ""),
+                    })
+                    assigned = True
+                    break
+            if assigned:
+                break
+
+        if assigned:
+            continue
+
+        # 2) Alokasi normal (memungkinkan AULA dengan kapasitas 2)
+        is_aula_candidate = (bentuk_ujian.strip().lower() == "ujian tulis" and jumlah_mhs_val > 0)
+        date_iter = aula_preferred_dates() if is_aula_candidate else iter_allowed_dates()
+        for day_dt in date_iter:
+            shift_iter = aula_preferred_shifts(day_dt) if is_aula_candidate else generate_daily_shifts(day_dt)
+            for s_start, s_end in shift_iter:
                 if is_class_conflict(kelas, s_start, s_end):
                     continue
                 date_key = s_start.strftime("%Y-%m-%d")
@@ -341,17 +526,29 @@ def build_schedule(items: list[dict]):
                 # Jika CSV sudah menspesifikkan ruangan, coba pakai ruangan itu saja
                 if ruangan:
                     # Hanya assign jika ruangan tersebut belum dipakai pada slot ini
-                    if ruangan not in room_usage[date_key][shift_key] and not is_room_blacklisted_on_date(ruangan, s_start):
-                        room = ruangan
+                    if not is_room_blacklisted_on_date(ruangan, s_start):
+                        current = room_usage[date_key][shift_key].get(ruangan, 0)
+                        if is_aula(ruangan):
+                            if is_aula_time_allowed(day_dt, s_start, s_end) and current < 2:
+                                room = ruangan
+                            else:
+                                continue
+                        else:
+                            if current == 0:
+                                room = ruangan
+                            else:
+                                continue
                     else:
                         # Slot ini tidak tersedia untuk ruangan yang diminta, coba slot berikutnya
                         continue
                 else:
-                    room = pick_free_room(s_start, date_key, shift_key)
+                    room = pick_free_room(s_start, date_key, shift_key, s_start, s_end, bentuk_ujian, True, jumlah_mhs_val)
                 if room:
                     class_usage[kelas].append((s_start, s_end))
                     class_daily_count[kelas][date_key] += 1
-                    room_usage[date_key][shift_key].add(room)
+                    room_usage[date_key][shift_key][room] += 1
+                    if kelas:
+                        room_occupants[date_key][shift_key][room].append(kelas)
                     generated_assignments.append({
                         "HARI": weekday_name(s_start),
                         "TANGGAL": s_start.strftime("%d-%b-%y"),

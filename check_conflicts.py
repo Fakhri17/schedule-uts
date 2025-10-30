@@ -191,7 +191,12 @@ def find_room_conflicts(records):
         by_key[(tgl, shf, room)].append(rec)
 
     conflicts = []
+    AULA_NAME = "AULA"
     for (tgl, shf, room), items in by_key.items():
+        # Khusus AULA: izinkan hingga 2 kelas dalam 1 shift
+        if room.strip().upper() == AULA_NAME:
+            if len(items) <= 2:
+                continue
         if len(items) > 1:
             for it in items:
                 conflicts.append({
