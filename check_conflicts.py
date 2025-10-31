@@ -108,6 +108,20 @@ def deduplicate_records(records):
     return deduped
 
 
+def add_keys(records):
+    """Tambahkan kolom bantu kunci ke setiap record untuk analisis manual di Excel."""
+    for r in records:
+        tanggal = r.get("TANGGAL", "").strip().upper()
+        shift = r.get("SHIFT", "").strip().upper()
+        ruangan = r.get("RUANGAN", "").strip().upper()
+        kelas = r.get("KELAS", "").strip().upper()
+        dosen = r.get("NAMA DOSEN", "").strip().upper()
+        r["KEY_RUANGAN"] = f"{tanggal}|{shift}|{ruangan}"
+        r["KEY_KELAS"] = f"{tanggal}|{shift}|{kelas}"
+        r["KEY_DOSEN"] = f"{tanggal}|{shift}|{dosen}"
+    return records
+
+
 def find_class_conflicts(records):
     # Group by (KELAS, TANGGAL)
     from collections import defaultdict
@@ -248,6 +262,23 @@ def write_conflicts(conflicts, out_path: Path):
             w.writerow([c.get(k, "") for k in cols])
 
 
+def write_key_summary(records, out_path):
+    """Ekspor summary pivot count untuk KEY_RUANGAN, KEY_KELAS, KEY_DOSEN (bisa difilter di Excel)."""
+    from collections import Counter
+    keys = [
+        ("KEY_RUANGAN", "Tanggal+Shift+Ruangan"),
+        ("KEY_KELAS", "Tanggal+Shift+Kelas"),
+        ("KEY_DOSEN", "Tanggal+Shift+Dosen"),
+    ]
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["JENIS_KEY", "KEY", "JUMLAH"])
+        for key_col, nama_col in keys:
+            c = Counter([r.get(key_col, "") for r in records if r.get(key_col,"")])
+            for k, v in c.most_common():
+                writer.writerow([nama_col, k, v])
+
+
 def main():
     base = Path(__file__).parent
     # Prioritas cek hasil generate
@@ -266,6 +297,8 @@ def main():
     header, records = read_schedule(src)
     # Deduplicate sebelum pengecekan
     records = deduplicate_records(records)
+    # Tambahkan KEY ke records untuk manual audit
+    add_keys(records)
     # Kelas: overlap + limit >2/hari
     class_conflicts = find_class_conflicts(records)
     out_path_class = base / "kelas-conflicts.csv"
@@ -280,6 +313,9 @@ def main():
     blacklist_violations = find_blacklist_violations(records)
     out_path_blk = base / "ruangan-blacklist-violations.csv"
     write_conflicts(blacklist_violations, out_path_blk)
+
+    # Tambahkan fitur ekspor rekapitulasi key (TANGGAL+SHIFT+RUANGAN, dsb) untuk manual cek cepat
+    write_key_summary(records, base / "rekap_kombinasi_key.csv")
 
     print(f"Kelas conflicts: {len(class_conflicts)} -> {out_path_class.name}")
     print(f"Ruangan conflicts: {len(room_conflicts)} -> {out_path_room.name}")

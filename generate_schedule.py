@@ -260,6 +260,10 @@ def build_schedule(items: list[dict]):
     room_occupants = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))  # date_str -> shift_str -> room -> list kelas
     class_usage = defaultdict(list)  # kelas -> list[(start_dt,end_dt)]
     class_daily_count = defaultdict(lambda: defaultdict(int))  # kelas -> date_str -> count
+    # Track tanggal yang sudah dipakai per kode mata kuliah untuk prefer same-day scheduling
+    course_used_dates = defaultdict(set)  # kode_mk -> set(date_str "YYYY-MM-DD")
+    # Juga simpan count per tanggal agar bisa memadatkan di tanggal yang paling banyak dipakai
+    course_date_counts = defaultdict(lambda: defaultdict(int))  # kode_mk -> date_str -> count
 
     # Kumpulkan existing jadwal bila ada
     for it in items:
@@ -280,6 +284,11 @@ def build_schedule(items: list[dict]):
                 cls_for_occ = it.get("kelas", "")
                 if cls_for_occ:
                     room_occupants[date_key][shift_key][room].append(cls_for_occ)
+            # Mark tanggal yang sudah terpakai oleh kode mk ini
+            kode_exist = it.get("kode_mk", "")
+            if kode_exist:
+                course_used_dates[kode_exist].add(date_key)
+                course_date_counts[kode_exist][date_key] += 1
 
     # Siapkan daftar shifts harian (dipakai untuk mengisi yang kosong)
     # Kita generate untuk beberapa hari ke depan (misal 14 hari) sampai kebutuhan terpenuhi
@@ -398,6 +407,10 @@ def build_schedule(items: list[dict]):
                     room_usage[date_key][shift_key_state][room] += 1
                     if kelas:
                         room_occupants[date_key][shift_key_state][room].append(kelas)
+                # Tandai tanggal terpakai untuk kode ini
+                if kode:
+                    course_used_dates[kode].add(date_key)
+                    course_date_counts[kode][date_key] += 1
             # Tulis PERSIS seperti CSV
             generated_assignments.append({
                 "HARI": it["hari"],
@@ -435,6 +448,10 @@ def build_schedule(items: list[dict]):
                 room_usage[date_key][shift_key][room] += 1
                 if kelas:
                     room_occupants[date_key][shift_key][room].append(kelas)
+            # Tandai tanggal terpakai untuk kode ini
+            if kode:
+                course_used_dates[kode].add(date_key)
+                course_date_counts[kode][date_key] += 1
             generated_assignments.append({
                 "HARI": weekday_name(start_dt),
                 "TANGGAL": start_dt.strftime("%d-%b-%y"),
@@ -455,6 +472,73 @@ def build_schedule(items: list[dict]):
 
         # Jika belum ada hari/tanggal/shift, generate baru
         assigned = False
+
+        # 0) Prefer: jadwalkan di tanggal yang sama dengan mata kuliah (kode) ini jika sudah ada,
+        #    urutkan tanggal berdasarkan count terbanyak lalu tanggal paling awal.
+        if kode and course_used_dates.get(kode):
+            is_aula_candidate = (bentuk_ujian.strip().lower() == "ujian tulis" and jumlah_mhs_val > 0)
+            ordered_dates = sorted(
+                list(course_used_dates[kode]),
+                key=lambda dk: (-course_date_counts[kode].get(dk, 0), dk)
+            )
+            for date_key_same in ordered_dates:
+                try:
+                    day_dt = datetime.strptime(date_key_same, "%Y-%m-%d")
+                except Exception:
+                    continue
+                shift_iter = aula_preferred_shifts(day_dt) if is_aula_candidate else generate_daily_shifts(day_dt)
+                for s_start, s_end in shift_iter:
+                    if is_class_conflict(kelas, s_start, s_end):
+                        continue
+                    date_key0 = s_start.strftime("%Y-%m-%d")
+                    shift_key0 = format_time_range(s_start, s_end)
+                    # Jika CSV menspesifikkan ruangan, coba hormati
+                    if ruangan:
+                        if is_room_blacklisted_on_date(ruangan, s_start):
+                            continue
+                        current = room_usage[date_key0][shift_key0].get(ruangan, 0)
+                        if is_aula(ruangan):
+                            if not (is_aula_time_allowed(day_dt, s_start, s_end) and current < 2):
+                                continue
+                            room = ruangan
+                        else:
+                            if current != 0:
+                                continue
+                            room = ruangan
+                    else:
+                        room = pick_free_room(s_start, date_key0, shift_key0, s_start, s_end, bentuk_ujian, True, jumlah_mhs_val)
+                    if not room:
+                        continue
+                    class_usage[kelas].append((s_start, s_end))
+                    class_daily_count[kelas][date_key0] += 1
+                    room_usage[date_key0][shift_key0][room] += 1
+                    if kelas:
+                        room_occupants[date_key0][shift_key0][room].append(kelas)
+                    generated_assignments.append({
+                        "HARI": weekday_name(s_start),
+                        "TANGGAL": s_start.strftime("%d-%b-%y"),
+                        "SHIFT": shift_key0,
+                        "RUANGAN": room,
+                        "KODE MATA KULIAH": kode,
+                        "NAMA MATA KULIAH": nama,
+                        "NAMA DOSEN": it.get("nama_dosen", ""),
+                        "KELAS": kelas,
+                        "BENTUK UJIAN": it.get("bentuk_ujian", ""),
+                        "BUTUH MENGGANDAKAN SOAL": it.get("butuh_gandakan", ""),
+                        "BUTUH LEMBAR JAWABAN KERJA": it.get("butuh_lembar", ""),
+                        "BUTUH PENGAWAS UJIAN": it.get("butuh_pengawas", ""),
+                        "BUTUH RUANG KELAS": it.get("butuh_ruang", ""),
+                        "JUMLAH MAHASISWA": it.get("jumlah_mhs", ""),
+                    })
+                    # Tandai tanggal terpakai untuk kode ini
+                    course_used_dates[kode].add(date_key0)
+                    course_date_counts[kode][date_key0] += 1
+                    assigned = True
+                    break
+                if assigned:
+                    break
+            if assigned:
+                continue
 
         # 1) Coba pairing ke AULA yang sudah punya 1 slot terisi terlebih dahulu (prefer prefix sama)
         #    Hanya untuk BENTUK UJIAN = "Ujian Tulis"
