@@ -21,7 +21,7 @@ def parse_time_range(date_str: str, shift_str: str):
     if not date_str or not shift_str:
         return None
     # Coba beberapa format tanggal yang mungkin muncul di output/CSV input
-    date_formats = ["%d-%b-%y", "%d/%m/%Y"]
+    date_formats = ["%d-%b-%y", "%d/%m/%Y", "%d-%m-%Y"]
     date_dt = None
     for fmt in date_formats:
         try:
@@ -36,7 +36,7 @@ def parse_time_range(date_str: str, shift_str: str):
         return None
     # Bersihkan whitespace termasuk tab
     s1 = parts[0].strip().replace(" ", "").replace("\t", "")
-    s2 = parts[1].strip().replace("\t", "")
+    s2 = parts[1].strip().replace(" ", "").replace("\t", "")
     try:
         h1, m1 = map(int, s1.split("."))
         h2, m2 = map(int, s2.split("."))
@@ -171,8 +171,8 @@ def find_class_conflicts(records):
 # ====== Sinkron dengan generate_schedule.py untuk blacklist tanggal-ruangan ======
 START_DATE = datetime(2025, 11, 3)
 END_DATE = datetime(2025, 11, 7)
-BLACKLIST_MON_WED_SUFFIXES = {"KELAS 2.08", "KELAS 2.07", "KELAS 2.06", "KELAS 2.05", "KELAS 2.04"}
-BLACKLIST_MON_FRI_SUFFIXES = {"KELAS 2.09"}
+BLACKLIST_MON_WED_SUFFIXES = {"KTT 2.08", "KTT 2.07", "KTT 2.06", "KTT 2.05", "KTT 2.04"}
+BLACKLIST_MON_FRI_SUFFIXES = {"KTT 2.09"}
 
 
 def is_within_uts_week(date_dt: datetime) -> bool:
@@ -194,6 +194,7 @@ def is_room_blacklisted_on_date(room: str, date_dt: datetime) -> bool:
 
 def find_room_conflicts(records):
     # Ruangan tidak boleh dipakai lebih dari 1 kelas pada (tanggal, shift) yang sama
+    # Kecuali AULA yang boleh sampai 2 kelas per shift
     from collections import defaultdict
     by_key = defaultdict(list)  # (TANGGAL, SHIFT, RUANGAN) -> list recs
     for rec in records:
@@ -211,6 +212,7 @@ def find_room_conflicts(records):
         if room.strip().upper() == AULA_NAME:
             if len(items) <= 2:
                 continue
+        # Untuk ruangan lain, maksimal 1 kelas per shift
         if len(items) > 1:
             for it in items:
                 conflicts.append({
@@ -221,6 +223,47 @@ def find_room_conflicts(records):
                     "MATA KULIAH": it.get("NAMA MATA KULIAH", ""),
                     "KODE": it.get("KODE MATA KULIAH", ""),
                 })
+    return conflicts
+
+
+def find_dosen_conflicts(records):
+    # Dosen tidak boleh mengawasi 2 ujian pada waktu yang sama (overlap)
+    from collections import defaultdict
+    by_dosen = defaultdict(list)  # DOSEN -> list recs
+    
+    for rec in records:
+        dosen = rec.get("NAMA DOSEN", "").strip()
+        if not dosen:
+            continue
+        interval = rec.get("_INTERVAL")
+        if interval is None:
+            continue
+        by_dosen[dosen].append(rec)
+
+    conflicts = []
+    for dosen, items in by_dosen.items():
+        # Cek pairwise overlap waktu untuk dosen yang sama
+        for i in range(len(items)):
+            s1, e1 = items[i]["_INTERVAL"]
+            tgl1 = items[i].get("TANGGAL", "")
+            for j in range(i + 1, len(items)):
+                s2, e2 = items[j]["_INTERVAL"]
+                # Cek apakah waktu overlap
+                overlap = not (e1 <= s2 or s1 >= e2)
+                if overlap:
+                    conflicts.append({
+                        "TANGGAL_1": items[i].get("TANGGAL", ""),
+                        "SHIFT_1": items[i]["SHIFT"],
+                        "DOSEN": dosen,
+                        "KELAS_1": items[i].get("KELAS", ""),
+                        "MATA KULIAH 1": items[i].get("NAMA MATA KULIAH", ""),
+                        "RUANGAN_1": items[i].get("RUANGAN", ""),
+                        "TANGGAL_2": items[j].get("TANGGAL", ""),
+                        "SHIFT_2": items[j]["SHIFT"],
+                        "KELAS_2": items[j].get("KELAS", ""),
+                        "MATA KULIAH 2": items[j].get("NAMA MATA KULIAH", ""),
+                        "RUANGAN_2": items[j].get("RUANGAN", ""),
+                    })
     return conflicts
 
 
@@ -281,9 +324,11 @@ def write_key_summary(records, out_path):
 
 def main():
     base = Path(__file__).parent
-    # Prioritas cek hasil generate
+    # Prioritas cek hasil generate (cek jadwal-uts-fix.csv dulu jika ada)
     candidates = [
+        base / "jadwal-uts-fix.csv",
         base / "jadwal-uts-output.csv",
+        base / "jadwal-uts.csv",
     ]
     src = None
     for p in candidates:
@@ -292,34 +337,79 @@ def main():
             break
     if src is None:
         print("Tidak menemukan file jadwal untuk dicek.")
+        print(f"Mencari file di: {[str(p) for p in candidates]}")
         return
+    
+    print(f"Mengecek konflik pada file: {src.name}")
 
     header, records = read_schedule(src)
+    print(f"Total baris data: {len(records)}")
+    
     # Deduplicate sebelum pengecekan
+    records_before = len(records)
     records = deduplicate_records(records)
+    records_after = len(records)
+    if records_before != records_after:
+        print(f"Deduplikasi: {records_before} -> {records_after} baris")
+    
     # Tambahkan KEY ke records untuk manual audit
     add_keys(records)
+    
     # Kelas: overlap + limit >2/hari
+    print("\n=== Mengecek Konflik Kelas ===")
     class_conflicts = find_class_conflicts(records)
     out_path_class = base / "kelas-conflicts.csv"
     write_conflicts(class_conflicts, out_path_class)
+    print(f"Konflik kelas ditemukan: {len(class_conflicts)}")
+    if class_conflicts:
+        print(f"  -> Detail disimpan di: {out_path_class.name}")
 
     # Ruangan: double-booking
+    print("\n=== Mengecek Konflik Ruangan ===")
     room_conflicts = find_room_conflicts(records)
     out_path_room = base / "ruangan-conflicts.csv"
     write_conflicts(room_conflicts, out_path_room)
+    print(f"Konflik ruangan ditemukan: {len(room_conflicts)}")
+    if room_conflicts:
+        print(f"  -> Detail disimpan di: {out_path_room.name}")
 
     # Blacklist: pelanggaran aturan tanggal-ruangan
+    print("\n=== Mengecek Pelanggaran Blacklist Ruangan ===")
     blacklist_violations = find_blacklist_violations(records)
     out_path_blk = base / "ruangan-blacklist-violations.csv"
     write_conflicts(blacklist_violations, out_path_blk)
+    print(f"Pelanggaran blacklist ditemukan: {len(blacklist_violations)}")
+    if blacklist_violations:
+        print(f"  -> Detail disimpan di: {out_path_blk.name}")
+
+    # Dosen: konflik waktu mengawasi ujian
+    print("\n=== Mengecek Konflik Dosen ===")
+    dosen_conflicts = find_dosen_conflicts(records)
+    out_path_dosen = base / "dosen-conflicts.csv"
+    write_conflicts(dosen_conflicts, out_path_dosen)
+    print(f"Konflik dosen ditemukan: {len(dosen_conflicts)}")
+    if dosen_conflicts:
+        print(f"  -> Detail disimpan di: {out_path_dosen.name}")
 
     # Tambahkan fitur ekspor rekapitulasi key (TANGGAL+SHIFT+RUANGAN, dsb) untuk manual cek cepat
+    print("\n=== Membuat Rekapitulasi Key ===")
     write_key_summary(records, base / "rekap_kombinasi_key.csv")
+    print(f"  -> Rekapitulasi disimpan di: rekap_kombinasi_key.csv")
 
-    print(f"Kelas conflicts: {len(class_conflicts)} -> {out_path_class.name}")
-    print(f"Ruangan conflicts: {len(room_conflicts)} -> {out_path_room.name}")
-    print(f"Blacklist violations: {len(blacklist_violations)} -> {out_path_blk.name}")
+    # Ringkasan
+    print("\n" + "="*50)
+    print("RINGKASAN HASIL PENGECEKAN:")
+    print(f"  Total data: {len(records)} baris")
+    print(f"  Konflik kelas: {len(class_conflicts)}")
+    print(f"  Konflik ruangan: {len(room_conflicts)}")
+    print(f"  Konflik dosen: {len(dosen_conflicts)}")
+    print(f"  Pelanggaran blacklist: {len(blacklist_violations)}")
+    total_issues = len(class_conflicts) + len(room_conflicts) + len(dosen_conflicts) + len(blacklist_violations)
+    if total_issues == 0:
+        print("\n✓ Tidak ada konflik atau pelanggaran yang ditemukan!")
+    else:
+        print(f"\n⚠ Total masalah ditemukan: {total_issues}")
+    print("="*50)
 
 
 if __name__ == "__main__":
