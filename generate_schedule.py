@@ -27,8 +27,8 @@ ALLOWED_SHIFT_STARTS = [time(7, 30), time(10, 0), time(13, 0), time(15, 30)]
 ALL_ROOMS = []
 
 # Blacklist ruangan berdasarkan hari (khusus minggu UTS 3-7 Nov 2025)
-BLACKLIST_MON_WED_SUFFIXES = {"KELAS 2.08", "KELAS 2.07", "KELAS 2.06", "KELAS 2.05", "KELAS 2.04"}
-BLACKLIST_MON_FRI_SUFFIXES = {"KELAS 2.09"}
+BLACKLIST_MON_WED_SUFFIXES = {"KTT 2.08", "KTT 2.07", "KTT 2.06", "KTT 2.05", "KTT 2.04"}
+BLACKLIST_MON_FRI_SUFFIXES = {"KTT 2.09"}
 
 
 def is_within_uts_week(date_dt: datetime) -> bool:
