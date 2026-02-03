@@ -2,11 +2,13 @@ import csv
 import re
 from pathlib import Path
 from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 
 BASE = Path(__file__).parent
 SRC = BASE / "pendaftar-pengawas.csv"
-OUT = BASE / "pendaftar-pengawas-clean.csv"
+OUT = BASE / "pendaftar-pengawas-clean.xlsx"
 
 
 DAY_KEYS = ["SENIN", "SELASA", "RABU", "KAMIS", "JUMAT"]
@@ -227,24 +229,49 @@ def main():
                 "_comp": comp,
             }
 
-    # Write cleaned CSV (semicolon-delimited, UTF-8)
+    # Write cleaned data to XLSX with auto-sized columns
     out_cols = ["EMAIL", "NAMA_LENGKAP", "NIM", "WA", "SETUJU"] + DAY_KEYS
-    with OUT.open("w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f, delimiter=";")
-        w.writerow(out_cols)
-        for k in sorted(by_key.keys()):
-            rec = by_key[k]
-            row = [
-                rec["email"],
-                rec["nama"],
-                rec["nim"],
-                rec["wa"],
-                rec["agree"],
-            ]
-            for d in DAY_KEYS:
-                row.append(rec["avail"].get(d, ""))
-            w.writerow(row)
-
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Pendaftar Pengawas"
+    
+    # Write header
+    ws.append(out_cols)
+    
+    # Write data rows
+    all_rows = []
+    for k in sorted(by_key.keys()):
+        rec = by_key[k]
+        row = [
+            rec["email"],
+            rec["nama"],
+            rec["nim"],
+            rec["wa"],
+            rec["agree"],
+        ]
+        for d in DAY_KEYS:
+            row.append(rec["avail"].get(d, ""))
+        all_rows.append(row)
+        ws.append(row)
+    
+    # Auto-adjust column widths based on content
+    for col_idx, col_name in enumerate(out_cols, start=1):
+        max_length = len(col_name)  # Start with header length
+        
+        # Check all data rows for this column
+        for row in all_rows:
+            if col_idx - 1 < len(row):
+                cell_value = str(row[col_idx - 1])
+                if len(cell_value) > max_length:
+                    max_length = len(cell_value)
+        
+        # Set column width (add some padding, max 50 to avoid too wide)
+        column_letter = get_column_letter(col_idx)
+        adjusted_width = min(max_length + 2, 50)
+        ws.column_dimensions[column_letter].width = adjusted_width
+    
+    wb.save(OUT)
     print(f"OK: {len(by_key)} baris -> {OUT.name}")
 
 

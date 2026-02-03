@@ -327,8 +327,10 @@ def main():
     # Prioritas cek hasil generate (cek jadwal-uts-fix.csv dulu jika ada)
     candidates = [
         base / "jadwal-uts-fix.csv",
+        base / "jadwal-uts-fix.xlsx",
         base / "jadwal-uts-output.csv",
         base / "jadwal-uts.csv",
+        base / "jadwal-with-pengawas.csv"
     ]
     src = None
     for p in candidates:
