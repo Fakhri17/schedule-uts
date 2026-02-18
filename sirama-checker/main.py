@@ -16,6 +16,7 @@ import pandas as pd
 BASE_DIR = Path(__file__).resolve().parent
 EXCEL_PATH = BASE_DIR / "030226 MK SIRAMA V2.xlsx"
 OUTPUT_PATH = BASE_DIR / "hasil_croscheck_sirama.xlsx"
+RUANG_PATH = BASE_DIR / "030226 ruang kelas .xlsx"
 
 MAGHRIB_START = time(17, 30)
 MAGHRIB_END = time(19, 30)
@@ -83,9 +84,12 @@ def overlaps_maghrib(start_t: time | None, end_t: time | None) -> bool:
 
 
 def normalize_ruangan(ruangan_series: pd.Series) -> pd.Series:
-    """Normalisasi nama ruangan: strip, uppercase, collapse spasi."""
+    """Normalisasi nama ruangan: strip, uppercase, hilangkan semua spasi."""
     return (
-        ruangan_series.astype(str).str.strip().str.upper().str.replace(r"\s+", " ", regex=True)
+        ruangan_series.astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace(r"\s+", "", regex=True)
     )
 
 
@@ -106,6 +110,16 @@ def load_sirama(path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     jadwal = pd.read_excel(xl, sheet_name="Jadwal")
     dosen_all = pd.read_excel(xl, sheet_name="Dosen ALL")
     return course, jadwal, dosen_all
+
+
+def load_ruang(path: Path) -> pd.DataFrame:
+    """Load master ruangan dari file 030226 ruang kelas .xlsx (sheet 'ruang')."""
+    xl = pd.ExcelFile(path)
+    df = pd.read_excel(xl, sheet_name="ruang")
+    # Jika hanya butuh ruangan tipe KELAS, filter di sini
+    if "tipe" in df.columns:
+        df = df[df["tipe"] == "KELAS"].copy()
+    return df
 
 
 # -----------------------------------------------------------------------------
@@ -186,22 +200,58 @@ def check_6_bentrok_angkatan(jadwal: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def check_7_ruangan_kosong(jadwal: pd.DataFrame) -> pd.DataFrame:
-    """Per slot (HARI, SHIFT): ruangan yang ada di Jadwal tapi tidak dipakai di slot itu (sementara dari Jadwal)."""
+def check_7_ruangan_kosong(jadwal: pd.DataFrame, ruang: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per slot (HARI, SHIFT): ruangan master yang tidak dipakai di slot itu.
+    Master ruangan diambil dari 030226 ruang kelas .xlsx.
+    """
     j = jadwal.copy()
     j["RUANGAN_NORM"] = normalize_ruangan(j["RUANGAN"])
-    semua_ruangan = set(j["RUANGAN_NORM"].dropna().unique())
-    slots = j.groupby(["HARI", "SHIFT"], dropna=False)
-    rows = []
-    for (hari, shift), grp in slots:
+
+    ruang_master = set(normalize_ruangan(ruang["nama_ruang"]).dropna().unique())
+
+    rows: list[dict] = []
+    for (hari, shift), grp in j.groupby(["HARI", "SHIFT"], dropna=False):
         terpakai = set(grp["RUANGAN_NORM"].dropna().unique())
-        kosong = sorted(semua_ruangan - terpakai)
+        kosong = sorted(ruang_master - terpakai)
         if kosong:
-            rows.append({"HARI": hari, "SHIFT": shift, "RUANGAN_KOSONG": ", ".join(kosong), "JUMLAH": len(kosong)})
+            rows.append(
+                {
+                    "HARI": hari,
+                    "SHIFT": shift,
+                    "RUANGAN_KOSONG": ", ".join(kosong),
+                    "JUMLAH": len(kosong),
+                }
+            )
+
     if not rows:
         return pd.DataFrame(columns=["NO", "HARI", "SHIFT", "RUANGAN_KOSONG", "JUMLAH"])
-    out = pd.DataFrame(rows)
-    out = out.sort_values(["HARI", "SHIFT"])
+
+    out = pd.DataFrame(rows).sort_values(["HARI", "SHIFT"])
+    out.insert(0, "NO", range(1, len(out) + 1))
+    return out
+
+
+def check_8_ruangan_tidak_terdaftar(jadwal: pd.DataFrame, ruang: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ruangan yang muncul di Jadwal tetapi tidak ada di master ruangan.
+    Berguna untuk deteksi typo / ruangan belum terdaftar.
+    """
+    j = jadwal.copy()
+    j["RUANGAN_NORM"] = normalize_ruangan(j["RUANGAN"])
+
+    ruang_master = set(normalize_ruangan(ruang["nama_ruang"]).dropna().unique())
+    mask = ~j["RUANGAN_NORM"].isin(ruang_master)
+
+    if not mask.any():
+        return pd.DataFrame(
+            columns=["NO", "HARI", "SHIFT", "RUANGAN", "UID", "NAMA MATA KULIAH", "KELAS", "DOSEN"]
+        )
+
+    out = j.loc[
+        mask, ["HARI", "SHIFT", "RUANGAN", "UID", "NAMA MATA KULIAH", "KELAS", "DOSEN"]
+    ].copy()
+    out = out.sort_values(["HARI", "SHIFT", "RUANGAN"])
     out.insert(0, "NO", range(1, len(out) + 1))
     return out
 
@@ -215,7 +265,8 @@ def build_summary(results: dict[str, pd.DataFrame]) -> pd.DataFrame:
         {"NO": 4, "PENGECEKAN": "4. Bentrok jadwal dosen", "JUMLAH": len(results["4_bentrok_dosen"])},
         {"NO": 5, "PENGECEKAN": "5. Bentrok jadwal ruangan", "JUMLAH": len(results["5_bentrok_ruangan"])},
         {"NO": 6, "PENGECEKAN": "6. Bentrok jadwal per angkatan", "JUMLAH": len(results["6_bentrok_angkatan"])},
-        {"NO": 7, "PENGECEKAN": "7. Ruangan kosong per slot (sementara dari Jadwal)", "JUMLAH": len(results["7_ruangan_kosong"])},
+        {"NO": 7, "PENGECEKAN": "7. Ruangan kosong per slot (pakai master ruangan)", "JUMLAH": len(results["7_ruangan_kosong"])},
+        {"NO": 8, "PENGECEKAN": "8. Ruangan Jadwal tidak terdaftar di master", "JUMLAH": len(results["8_ruangan_tidak_terdaftar"])},
     ]
     return pd.DataFrame(rows)
 
@@ -231,7 +282,14 @@ def main() -> None:
     print("Memuat data SIRAMA...")
     course, jadwal, dosen_all = load_sirama(EXCEL_PATH)
 
-    print("Menjalankan 7 croscheck...")
+    if not RUANG_PATH.exists():
+        print(f"File ruang tidak ditemukan: {RUANG_PATH}")
+        return
+
+    print("Memuat master ruangan...")
+    ruang = load_ruang(RUANG_PATH)
+
+    print("Menjalankan 7 croscheck + cek ruangan...")
     results = {
         "1_belum_jadwal": check_1_belum_jadwal(course, jadwal),
         "2_tidak_match_sks": check_2_tidak_match_sks(course, jadwal),
@@ -239,7 +297,8 @@ def main() -> None:
         "4_bentrok_dosen": check_4_bentrok_dosen(jadwal),
         "5_bentrok_ruangan": check_5_bentrok_ruangan(jadwal),
         "6_bentrok_angkatan": check_6_bentrok_angkatan(jadwal),
-        "7_ruangan_kosong": check_7_ruangan_kosong(jadwal),
+        "7_ruangan_kosong": check_7_ruangan_kosong(jadwal, ruang),
+        "8_ruangan_tidak_terdaftar": check_8_ruangan_tidak_terdaftar(jadwal, ruang),
     }
 
     summary = build_summary(results)
