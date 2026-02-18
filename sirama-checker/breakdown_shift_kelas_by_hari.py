@@ -4,7 +4,7 @@ Breakdown shift per slot — cek ruang kelas belum terisi.
 breakdown_shift_kelas.py yang urut Ruang Kelas dulu).
 
 Dataset: 180226 Jadwal SIRAMA - baru.xlsx
-Output: Ruang Kelas, Hari, Shift, MK (MK kosong = slot belum terisi).
+Output: Ruang Kelas, Hari, Shift, MK, Kelas, Dosen (kosong = slot belum terisi).
 """
 from __future__ import annotations
 
@@ -93,6 +93,8 @@ def build_filled_slots(jadwal: pd.DataFrame) -> pd.DataFrame:
                     "Hari": r["HARI"],
                     "Shift": slot,
                     "MK": r["NAMA MATA KULIAH"],
+                    "Kelas": r["KELAS"],
+                    "Dosen": r["DOSEN"],
                 }
             )
     return pd.DataFrame(rows)
@@ -128,6 +130,8 @@ def run_breakdown(jadwal: pd.DataFrame, ruang: pd.DataFrame) -> pd.DataFrame:
         how="left",
     )
     merged["MK"] = merged["MK"].fillna("")
+    merged["Kelas"] = merged["Kelas"].fillna("")
+    merged["Dosen"] = merged["Dosen"].fillna("")
     merged["Hari"] = pd.Categorical(
         merged["Hari"], categories=HARI_ORDER, ordered=True
     )
@@ -142,6 +146,11 @@ def run_breakdown(jadwal: pd.DataFrame, ruang: pd.DataFrame) -> pd.DataFrame:
 # Main
 # -----------------------------------------------------------------------------
 def main() -> None:
+    print("=" * 50)
+    print("  Breakdown Shift per Slot — by Hari")
+    print("  (urut: Hari -> Ruang Kelas -> Shift)")
+    print("=" * 50)
+
     if not EXCEL_PATH.exists():
         print(f"File tidak ditemukan: {EXCEL_PATH}")
         return
